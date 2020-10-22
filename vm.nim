@@ -11,8 +11,10 @@ type
   Opcode = enum
     OP_BR, OP_ADD, OP_LD, OP_ST, OP_JSR, OP_AND, OP_LDR, OP_STR,
     OP_RTI, OP_NOT, OP_LDI, OP_STI, OP_JMP, OP_RES, OP_LEA, OP_TRAP
-  CondFlag = enum
-    FL_POS, FL_ZRO, FL_NEG
+  Condflag = enum
+    FL_POS = 1 shl 0,
+    FL_ZRO = 1 shl 1,
+    FL_NEG = 1 shl 2
   Trapcode = enum
     T_GETC = 0x20, T_OUT = 0x21, T_PUTS = 0x22, T_IN = 0x23, T_PUTSP = 0x24, T_HALT = 0x25
 
@@ -21,7 +23,7 @@ const MEM_SIZE = high(uint16)
 var
   memory: array[MEM_SIZE, uint16]
   reg: array[R_R0..R_COND, uint16]
-  running: bool = false
+  running = false
   original_tio: Termios
 
 proc vm_sext(x: uint16, width: uint16): uint16 =
@@ -62,8 +64,8 @@ proc vm_loop() =
 
   while running:
     instr = memory[reg[R_PC]]
-    op = Opcode(instr shr 12)
-
+    op = Opcode(instr.bitsliced(12..15))
+    inc reg[R_PC]
     case op:
       of OP_BR:
         let
@@ -75,7 +77,6 @@ proc vm_loop() =
            (z and reg[R_COND] == FL_ZRO.uint16) or
            (p and reg[R_COND] == FL_POS.uint16):
           reg[R_PC] += vm_sext(offset, 9)
-          continue
 
       of OP_ADD:
         let
@@ -99,7 +100,7 @@ proc vm_loop() =
 
       of OP_ST:
         let
-          sr = instr.bitsliced(9..1)
+          sr = instr.bitsliced(9..11)
           offset = instr.bitsliced(0..8)
         memory[reg[R_PC] + vm_sext(offset, 9)] = reg[sr.Reg]
 
@@ -112,7 +113,6 @@ proc vm_loop() =
         else:
           let base_r = instr.bitsliced(6..8)
           reg[R_PC] = reg[base_r.Reg]
-        continue
 
       of OP_AND:
         let
@@ -146,14 +146,14 @@ proc vm_loop() =
         let
           dr = instr.bitsliced(9..11)
           sr = instr.bitsliced(6..8)
-        reg[dr.Reg] = bitnot(reg[sr.Reg])
+        reg[dr.Reg] = not reg[sr.Reg]
         vm_update_flags(dr)
 
       of OP_LDI:
         let
           dr = instr.bitsliced(9..11)
           offset = instr.bitsliced(0..8)
-        reg[dr.Reg] = memory[memory[R_PC.uint16] + vm_sext(offset, 9)]
+        reg[dr.Reg] = memory[memory[reg[R_PC] + vm_sext(offset, 9)]]
         vm_update_flags(dr)
 
       of OP_STI:
@@ -165,7 +165,6 @@ proc vm_loop() =
       of OP_JMP:
         let base_r = instr.bitsliced(6..8)
         reg[R_PC] = reg[base_r.Reg]
-        continue
 
       of OP_LEA:
         let
@@ -180,7 +179,8 @@ proc vm_loop() =
           of T_GETC:
             reg[R_R0] = uint16(stdin.readChar())
           of T_OUT:
-            echo char(reg[R_R0].bitsliced(0..7))
+            stdout.write(char(reg[R_R0]))
+            flushFile(stdout)
           of T_PUTS:
             var start = reg[R_R0]
             while start < MEM_SIZE and memory[start] != 0:
@@ -188,11 +188,12 @@ proc vm_loop() =
               inc start
             flushFile(stdout)
           of T_IN:
-            echo "Enter a character: "
+            stdout.write("Enter a character: ")
+            flushFile(stdout)
             let ch = stdin.readChar()
             stdout.write(ch)
             flushFile(stdout)
-            reg[R_R0] = uint8(ch)
+            reg[R_R0] = uint16(ch)
           of T_PUTSP:
             var start = reg[R_R0]
             while start < MEM_SIZE:
@@ -205,15 +206,14 @@ proc vm_loop() =
               inc start
             flushFile(stdout)
           of T_HALT:
-            echo "HALT"
+            stdout.write("HALT")
+            flushFile(stdout)
             running = false
 
       else:
         stderr.writeLine "Invalid opcode"
         flushFile(stderr)
         quit(1)
-
-    inc reg[R_PC]
 
 proc vm_disable_input_buffering() =
   let fd = getFileHandle(stdin)
